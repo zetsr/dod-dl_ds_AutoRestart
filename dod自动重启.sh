@@ -7,60 +7,85 @@ if [ "$(id -u)" != "0" ]; then
 fi
 
 # 变量声明
-USER="YourUserName"                              # 执行命令的用户
-SCREEN_NAME="dod"                    # screen会话名称
-WORK_DIR="/home/game/Steam/steamapps/common/dod_server"  # 工作目录
-START_SCRIPT="./DragonsServer.sh"  # 启动脚本路径
-PORT="7777"                              # 启动端口
-QUERYPORT="27015"                        # 查询端口
-SERVER_NAME="YOUR SERVER NAME"  # 服务器名称
-LOG_FILE="/home/game/Steam/steamapps/common/dod_server/Dragons/Saved/Logs/Dragons.log"  # 日志文件路径
-FAIL_MESSAGE="LogOnline: Warning: OSS: Async task 'FOnlineAsyncTaskSteamCreateServer bWasSuccessful: 0' failed in"  # 失败日志关键字
-SUCCESS_MESSAGE="AutoSave timer started. Saving every 300.0 seconds!"  # 成功日志关键字（部分匹配）
-SCREEN_QUIT_WAIT_TIME=3                 # 等待screen结束的时间（秒）
-START_WAIT_TIME=1                        # 启动服务端后等待的时间（秒）
-SUCCESS_FLAG_FILE="/tmp/dragons_success_flag"  # 成功标志文件路径
+USER="game"
+SCREEN_NAME="s6"
+WORK_DIR="/home/game/server_6"
+START_SCRIPT="./DragonsServer.sh"
+PORT="7782"
+QUERYPORT="7020"
+SERVER_NAME="[宁波] New Dawn #6"
+LOG_FILE="/home/game/server_6/Dragons/Saved/Logs/Dragons.log"
+FAIL_MESSAGE="LogOnline: Warning: OSS: Async task 'FOnlineAsyncTaskSteamCreateServer bWasSuccessful: 0' failed in"
+SUCCESS_MESSAGE="AutoSave timer started. Saving every 300.0 seconds!"
+SCREEN_QUIT_WAIT_TIME=10
+START_WAIT_TIME=5
+SUCCESS_FLAG_FILE="/tmp/dragons_success_flag"
+
+# 函数：清理screen会话及其相关进程
+cleanup_screen() {
+    echo "正在清理 '$SCREEN_NAME' screen会话及其进程..."
+    # 获取screen会话的PID
+    SCREEN_PID=$(sudo -u "$USER" screen -ls | grep "$SCREEN_NAME" | awk '{print $1}' | cut -d'.' -f1)
+    
+    if [ -n "$SCREEN_PID" ]; then
+        # 首先尝试正常退出screen
+        sudo -u "$USER" screen -S "$SCREEN_NAME" -X quit
+        sleep 2  # 短暂等待
+        
+        # 检查screen是否还存在
+        if sudo -u "$USER" screen -ls | grep -q "$SCREEN_NAME"; then
+            # 如果screen还在，强制杀死screen进程
+            kill -9 "$SCREEN_PID" 2>/dev/null
+        fi
+    fi
+    
+    # 查找并杀死工作目录下可能残留的相关进程
+    pids=$(pgrep -u "$USER" -f "$WORK_DIR")
+    if [ -n "$pids" ]; then
+        echo "发现残留进程，PID: $pids"
+        kill -9 $pids 2>/dev/null
+    fi
+    
+    sleep "$SCREEN_QUIT_WAIT_TIME"
+}
 
 # 清理可能的旧标志文件
 rm -f "$SUCCESS_FLAG_FILE"
 
-# 进入无限循环，直到服务器启动成功
+# 确保日志文件目录存在
+mkdir -p "$(dirname "$LOG_FILE")"
+chown "$USER" "$(dirname "$LOG_FILE")"
+
+# 主循环
 while true; do
-    echo "正在结束现有的 '$SCREEN_NAME' screen会话..."
-    # 结束现有的screen会话
-    sudo -u "$USER" screen -S "$SCREEN_NAME" -X quit
-    # 等待一段时间，确保会话已完全结束
-    sleep "$SCREEN_QUIT_WAIT_TIME"
+    # 清理现有会话
+    cleanup_screen
+    
     echo "正在启动新的 '$SCREEN_NAME' screen会话..."
-    # 创建新的screen会话并运行启动命令
+    # 创建新的screen会话并记录PID
     sudo -u "$USER" screen -dmS "$SCREEN_NAME" sh -c "cd $WORK_DIR && $START_SCRIPT ?Port=$PORT ?QueryPort=$QUERYPORT -SteamServerName=\"$SERVER_NAME\" -log"
-    # 启动后等待一段时间，确保服务端开始生成日志
+    
     sleep "$START_WAIT_TIME"
     echo "开始监控日志文件: $LOG_FILE"
-    # 实时监控日志文件
-    tail -f "$LOG_FILE" | while read line; do
-        echo "日志行: $line"  # 调试：输出每行日志
-        # 检查日志是否包含失败关键字
+    
+    # 监控日志并设置超时（比如60秒）
+    timeout 60 tail -f "$LOG_FILE" | while read line; do
+        echo "日志行: $line"
         if echo "$line" | grep -q "$FAIL_MESSAGE"; then
             echo "检测到启动失败: $FAIL_MESSAGE"
-            # 启动失败，跳出监控循环，重新开始整个流程
             break
-        # 检查日志是否包含成功关键字
         elif echo "$line" | grep -q "$SUCCESS_MESSAGE"; then
             echo "检测到启动成功: $SUCCESS_MESSAGE"
-            # 创建成功标志文件
             touch "$SUCCESS_FLAG_FILE"
-            # 退出内层循环
             break
         fi
     done
 
-    # 检查是否创建了成功标志文件
     if [ -f "$SUCCESS_FLAG_FILE" ]; then
         echo "服务器启动成功，脚本退出。"
-        rm -f "$SUCCESS_FLAG_FILE"  # 清理标志文件
+        rm -f "$SUCCESS_FLAG_FILE"
         exit 0
     fi
-    # 如果没有成功标志，继续下一次循环（启动失败或未检测到成功）
+    
     echo "未检测到成功启动，重新尝试..."
 done
